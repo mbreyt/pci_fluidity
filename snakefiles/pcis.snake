@@ -132,8 +132,8 @@ rule stim_sim:
                 pci_val = lz_val / nf_val if nf_val > 0 else 0
                 np.savez(
                     output[0],
-                    tavg_d=tavg_d,
-                    tavg_t=tavg_t,
+                    # tavg_d=tavg_d,
+                    # tavg_t=tavg_t,
                     pci=pci_val,
                     lz=lz_val,
                     nf=nf_val,
