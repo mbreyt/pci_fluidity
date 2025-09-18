@@ -1,0 +1,64 @@
+import sys, os, re, time, logging
+import os
+sys.path.append(os.path.join(os.getcwd(), '../utils'))
+import numpy as np
+import simulation
+from tvb.simulator.lab import *
+import scipy.signal as sig
+logging.getLogger('tvb.basic.readers').setLevel(logging.ERROR)
+
+basedir = os.path.join(
+        os.getcwd(), "../results/resting-state-simulations"
+)
+
+conn = simulation.configure_conn(
+    f'{os.getcwd()}/../data/external/hcp-001.zip',
+    conn_speed=20.
+)
+
+GS = [f"{G:.03f}" for G in np.arange(0.25,0.70,0.01)]
+SIGS = [f"{nsig:.03f}" for nsig in np.arange(0.02,0.060,0.002)]
+
+
+DT = 0.01
+WARMUP = 1000
+FULL_SIM= 60000 #120000
+DECIM_FACTOR=32
+
+rule all:
+    input:
+        expand(
+                os.path.join(basedir,"downsampled_hcp-001_st_G{G}_nsig{nsig}_tavg.npz"),
+                G = GS,
+                nsig = SIGS,
+        ),
+
+
+rule tavg:
+    output:
+        expand(
+            os.path.join(basedir,"downsampled_hcp-001_st_G{{G}}_nsig{{nsig}}_tavg.npz"),
+            G=GS,
+            nsig=SIGS,
+        )
+    run:
+        G = float(wildcards.G)
+        nsig = float(wildcards.nsig)
+        sim = simulation.configure_sim(G=G,nsigma=nsig,conn=conn,dt=DT)
+        start_f = time.time()
+        (tavg_t_bf, tavg_d_bf), = simulation.run_nbMPR_backend(sim, simulation_length=FULL_SIM)
+        tavg_d_bf = sig.decimate(tavg_d_bf, DECIM_FACTOR, axis=0)
+        end_f = time.time()
+        tavg_t_bf *= 10
+        print(f'full sim = {end_f-start_f} seconds')
+        np.savez(output[0],
+            tavg_t=tavg_t_bf,
+            tavg_d=tavg_d_bf
+        )
+        del sim
+
+
+
+
+
+

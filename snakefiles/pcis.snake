@@ -1,0 +1,144 @@
+import numpy as np
+sys.path.append(os.path.join(os.getcwd(), '../utils'))
+import pci
+import simulation
+from tvb.simulator.lab import *
+import logging
+import time
+from itertools import product
+logging.getLogger('tvb.basic.readers').setLevel(logging.ERROR)
+
+basedir = os.path.join(
+        os.getcwd(), "../results/stimulations"
+)
+
+conn = simulation.configure_conn(
+    f'{os.getcwd()}/../data/external/hcp-001.zip',
+    conn_speed=20.
+)
+
+MAX_ONSET = 4200
+ONSETS = list(np.arange(1200,MAX_ONSET,200))
+GS = [f"{G:.03f}" for G in np.arange(0.25,0.70,0.05)]
+SIGS = [f"{nsig:.03f}" for nsig in np.arange(0.02,0.060,0.002)]
+NODES = [f"{node}" for node in np.arange(0,84,1)[conn.cortical][::4]]
+
+DT = 0.01
+THR = .7
+WINDOW = 10000
+WARMUP = 1000
+stimulus_amplitude = 40
+
+
+rule all:
+    input:
+        expand(
+            os.path.join(basedir,"baseline_G{G}_nsig{nsig}.npz"),
+            G=GS,
+            nsig=SIGS
+        ),
+        expand(
+            os.path.join(basedir,"stim_N{node}_onset{onset}_G{G}_nsig{nsig}.npz"),
+            G=GS,
+            nsig=SIGS,
+            node=NODES,
+            onset=ONSETS,
+        )
+
+
+rule baseline:
+    output:
+        expand(
+            os.path.join(basedir,"baseline_G{{G}}_nsig{{nsig}}.npz"),
+        ),
+    run:
+        G = float(wildcards.G)
+        G = np.round(G,4)
+        nsig = float(wildcards.nsig)
+        nsig = np.round(nsig,4)
+
+        sim = simulation.configure_sim(G=G,nsigma=nsig,conn=conn,dt=DT)
+        start = time.time()
+        (tavg_t, tavg_d), = simulation.run_nbMPR_backend(sim,simulation_length=WARMUP + MAX_ONSET + 500, chunksize=1000)
+        end = time.time()
+        print(f'baseline sim = {np.round(end - start)} seconds --> {DT}')
+        
+
+        for onset in ONSETS:
+            post_stim = tavg_d[(WARMUP + onset) * 10:(WARMUP + onset) * 10 + WINDOW, 0, :, 0]
+            Zbin = np.where(post_stim > THR, 1, 0)
+            lz_val = pci.lz_complexity_2D(Zbin)
+            nf_val = pci.pci_norm_factor(Zbin)
+            pci_val = lz_val / nf_val if nf_val > 0 else 0
+            np.savez(
+                os.path.join(basedir,f'baseline_onset{onset}_G{G}_nsig{nsig}.npz'),
+                tavg_d=tavg_d,
+                tavg_t=tavg_t,
+                pci=pci_val,
+                lz=lz_val,
+                nf=nf_val,
+                dt=DT
+            )
+                
+        start_b = time.time()
+        print(tavg_d.shape, G, nsig, DT)
+        Zbin = np.where(tavg_d[:,0,:,0] > THR, 1, 0)
+        lz_val, nf_val = pci.lz_complexity_2D(Zbin), pci.pci_norm_factor(Zbin)
+        pci_val = lz_val / nf_val if nf_val > 0 else 0
+        end_b = time.time()
+        
+        print(f'pci calculation = {np.round(end_b - start_b)} seconds')
+        
+        np.savez(
+            output[0],
+            tavg_d=tavg_d,
+            tavg_t=tavg_t,
+            pci=pci_val,
+            nf=nf_val,
+            lz=lz_val,
+            dt=DT
+        )
+
+
+rule stim_sim:
+    output:
+        expand(
+            os.path.join(basedir,"stim_N{{node}}_onset{{onset}}_G{{G}}_nsig{{nsig}}.npz"),
+        )
+    run:
+        G = float(wildcards.G)
+        G = np.round(G,4)
+        nsig = float(wildcards.nsig)
+        nsig = np.round(nsig,4)
+        node = int(wildcards.node)
+        onset = int(wildcards.onset)
+
+
+        for amp in [stimulus_amplitude, stimulus_amplitude/2, stimulus_amplitude/4]:
+            stimulus = simulation.build_stimulus(onset=onset + WARMUP, node=node, conn=conn, amp=amp)
+            sim = simulation.configure_sim(stimulus=stimulus, G=G, nsigma=nsig, conn=conn, dt=DT)
+            start = time.time()
+            (tavg_t, tavg_d), = simulation.run_nbMPR_backend(sim,simulation_length=WARMUP + onset + 1500, chunksize=1000)
+            end = time.time()
+            del sim
+            if np.any(np.isnan(tavg_d)):
+                    print(f'Numerical error {G, nsig, node, onset, DT, amp},  skipping')
+                    continue
+            else:
+                post_stim = tavg_d[(WARMUP + onset) * 10:(WARMUP + onset) * 10 + WINDOW, 0, :, 0]
+                Zbin = np.where(post_stim > THR, 1, 0)
+                lz_val = pci.lz_complexity_2D(Zbin)
+                nf_val = pci.pci_norm_factor(Zbin)
+                pci_val = lz_val / nf_val if nf_val > 0 else 0
+                np.savez(
+                    output[0],
+                    tavg_d=tavg_d,
+                    tavg_t=tavg_t,
+                    pci=pci_val,
+                    lz=lz_val,
+                    nf=nf_val,
+                    dt=DT
+                )
+                break
+
+

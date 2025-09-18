@@ -1,0 +1,115 @@
+import os
+import mne
+import sys
+sys.path.append(os.path.join(os.getcwd(), '../utils'))
+from src import data, simulation, pci, pci_utils, viz, analysis
+import numpy as np
+import pandas as pd
+from itertools import product
+import multiprocessing
+import mne_connectivity
+from data_utils import load_mat
+import scipy.signal as sig
+from itertools import combinations
+from metrics import fcd_ccor_eeg
+
+output_dir = os.path.join(
+        "../data/interim/FCD_ccor_decim_5_corrected"
+)
+data_dir = os.path.join(
+        "../data/XPK_RsEeg_renamed/"
+)
+
+
+SUBS = [f's{int(i+1)}.mat' for i in range(5)]
+DRUGS = ['XEN', 'PRO', 'KET']
+STATES = ['wake', 'anesth']
+FBANDS = ['.5_60']
+WINS = [1, 3, 10]
+DECIM_FACTOR = 5
+
+
+rule all:
+    input:
+        expand(
+            os.path.join(output_dir, "ccor_window_{win}s_fband{fband}_fcs_FCDS_{subject}_{drug}_{state}.npz"),
+            subject=SUBS,
+            drug=DRUGS,
+            state=STATES,
+            fband=FBANDS,
+            win=WINS
+        )
+
+rule fluidity:
+    input:
+        expand(
+            os.path.join(data_dir, "eeg_psd_{{drug}}_{{state}}_{{subject}}"),
+            subject=SUBS,
+            drug=DRUGS,
+            state=STATES
+        )
+    output:
+        expand(
+            os.path.join(output_dir, "ccor_window_{{win}}s_fband{{fband}}_fcs_FCDS_{{subject}}_{{drug}}_{{state}}.npz"),
+            subject=SUBS,
+            drug=DRUGS,
+            state=STATES,
+            win=WINS
+        )
+    run:
+        mat = load_mat(input[0])
+        f_split = input[0].split('_')
+        print(f_split)
+        ch_idx = mat['chans']['all_ixOri']-1
+        ch_names = list(mat['infos']['hdr']['label'])
+        ch_types = list(mat['infos']['hdr']['chantype'])
+        sfreq = mat['infos']['hdr']['Fs']
+        ch_names = np.array(ch_names)[ch_idx.astype(int)]
+        ch_types = np.array(ch_types)[ch_idx.astype(int)]
+        state = f_split[-2]
+        ch_loc = mat['infos']['chanlocs']
+        subject = f_split[-1].split('.')[0]
+        drug = f_split[-3]
+        print(f'subject : {subject}, drug: {drug}, state : {state}')
+        data_dict = {
+            'subject':subject ,
+            'drug': drug,
+            'state': state,
+            'data': mat['dataClean'],
+            'ch_names': list(ch_names),
+            'ch_types': list(ch_types),
+            'ch_locs': ch_loc,
+            'sfreq': sfreq
+        }
+
+
+        infos = mne.create_info(data_dict['ch_names'], data_dict['sfreq'], ch_types=data_dict['ch_types'])
+        raw = mne.io.RawArray(data_dict['data'], infos)
+        raw.apply_function(lambda x: x * 1e-6)
+        drug = drug[:-1]
+        del data_dict['data']
+
+        fband = wildcards.fband
+        win = int(wildcards.win)
+        l_freq, h_freq = [float(i) for i in fband.split('_')]
+
+        raw_dat = raw.filter(l_freq=l_freq, h_freq=h_freq).get_data()
+        decim_raw = sig.decimate(raw_dat, DECIM_FACTOR, axis=1)
+        del raw_dat
+        decim_freq = sfreq/DECIM_FACTOR
+        print('Computing fcd...')
+        fcd, fcs = fcd_ccor_eeg(decim_raw, win_len=int(decim_freq*win), win_sp=int(decim_freq*win/10))
+        
+
+        data_dict['decim_freq'] = decim_freq
+        data_dict['window'] = win
+        data_dict['fband'] = fband
+
+
+        print('Saving fcs and fcd...')
+        np.savez(output[0], fcs=fcs, FCDS=fcd, info=data_dict)
+
+
+
+
+
